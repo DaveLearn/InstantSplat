@@ -1,24 +1,22 @@
 #!/bin/bash
 
 # Change the absolute path first!
-DATA_ROOT_DIR="/home/david/projects/embodied_gaussians/datasets/real/single1_aruco/modelling/static/color"
+DATA_ROOT_DIR="/home/david/projects/embodied_gaussians/datasets/real"
 OUTPUT_DIR="output_infer"
-DATASETS=(
-    examples
-)
 
-SCENES=(
-    Barn
-    NUS
-)
+# ensure the scene is passed as an argument
+if [ -z "$1" ]; then
+    echo "Usage: $0 <scene> where scene is folder in $DATA_ROOT_DIR" 
+    exit 1
+fi
 
-N_VIEWS=(
-    3
-)
+SCENE=$1
 
-gs_train_iter=(
-    1500
-)
+
+N_VIEWS=5
+
+gs_train_iter=1500
+
 
 # Function to get the id of an available GPU
 get_available_gpu() {
@@ -35,9 +33,9 @@ run_on_gpu() {
     local SCENE=$3
     local N_VIEW=$4
     local gs_train_iter=$5
-    SOURCE_PATH=${DATA_ROOT_DIR}/${DATASET}/${SCENE}/
-    IMAGE_PATH=${SOURCE_PATH}images
-    MODEL_PATH=./${OUTPUT_DIR}/${DATASET}/${SCENE}/${N_VIEW}_views
+    SOURCE_PATH=${DATA_ROOT_DIR}/${DATASET}/${SCENE}/modelling/static/
+    IMAGE_PATH=${SOURCE_PATH}color
+    MODEL_PATH=./${OUTPUT_DIR}/${SCENE}/${N_VIEW}_views
 
     # Create necessary directories
     mkdir -p ${MODEL_PATH}
@@ -52,13 +50,16 @@ run_on_gpu() {
     -s ${IMAGE_PATH} \
     -m ${MODEL_PATH} \
     --n_views ${N_VIEW} \
-    --focal_avg \
     --co_vis_dsp \
     --conf_aware_ranking \
     --infer_video \
-    --ckpt_path naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric
-    > ${MODEL_PATH}/01_init_geo.log 2>&1
+    --niter 500 \
+    --lr 0.03 \
+    --ckpt_path naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric \
+    2>&1  | tee ${MODEL_PATH}/01_init_geo.log
+    
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Co-visible Global Geometry Initialization completed. Log saved in ${MODEL_PATH}/01_init_geo.log"
+
 
     # (2) Train: jointly optimize pose
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting training..."
@@ -66,13 +67,12 @@ run_on_gpu() {
     -s ${SOURCE_PATH} \
     -m ${MODEL_PATH} \
     -r 1 \
+    --images color \
     --n_views ${N_VIEW} \
     --iterations ${gs_train_iter} \
-    --optim_pose \
     --depth_ratio 0 \
-    --lambda_dist 100 \
-    --pp_optimizer \
-    > ${MODEL_PATH}/02_train.log 2>&1
+    --lambda_dist 10 \
+     2>&1  | tee ${MODEL_PATH}/02_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Training completed. Log saved in ${MODEL_PATH}/02_train.log"
 
     # (3) Render-Training_View
@@ -86,8 +86,8 @@ run_on_gpu() {
     --depth_ratio 0 \
     --num_cluster 50 \
     --mesh_res 2048 \
-    --depth_trunc 6.0 \
-    > ${MODEL_PATH}/03_render_train.log 2>&1
+    --depth_trunc 4.0 \
+    2>&1  | tee ${MODEL_PATH}/03_render_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rendering completed. Log saved in ${MODEL_PATH}/03_render_train.log"
     # --voxel_size 0.004 \
     # --sdf_trunc 0.016 \
@@ -99,35 +99,9 @@ run_on_gpu() {
 }
 
 # Main loop
-total_tasks=$((${#DATASETS[@]} * ${#SCENES[@]} * ${#N_VIEWS[@]} * ${#gs_train_iter[@]}))
-current_task=0
 
-for DATASET in "${DATASETS[@]}"; do
-    for SCENE in "${SCENES[@]}"; do
-        for N_VIEW in "${N_VIEWS[@]}"; do
-            for gs_train_iter in "${gs_train_iter[@]}"; do
-                current_task=$((current_task + 1))
-                echo "Processing task $current_task / $total_tasks"
+run_on_gpu 0 "$DATASET" "$SCENE" "$N_VIEWS" "$gs_train_iter"
 
-                # Get available GPU
-                GPU_ID=$(get_available_gpu)
-
-                # If no GPU is available, wait for a while and retry
-                while [ -z "$GPU_ID" ]; do
-                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] No GPU available, waiting 60 seconds before retrying..."
-                    sleep 60
-                    GPU_ID=$(get_available_gpu)
-                done
-
-                # Run the task in the background
-                (run_on_gpu $GPU_ID "$DATASET" "$SCENE" "$N_VIEW" "$gs_train_iter") &
-
-                # Wait for 20 seconds before trying to start the next task
-                sleep 10
-            done
-        done
-    done
-done
 
 # Wait for all background tasks to complete
 wait
