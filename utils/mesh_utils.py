@@ -370,7 +370,7 @@ class GaussianExtractor(object):
 
 
     @torch.no_grad()
-    def export_image(self, path):
+    def export_image(self, path, ds_path=None):
         """Export rendered images and related data to specified paths.
         
         Args:
@@ -388,6 +388,12 @@ class GaussianExtractor(object):
         os.makedirs(render_normal_path, exist_ok=True)
         os.makedirs(surf_nomal_path, exist_ok=True)
         
+        depth_path = None
+        if ds_path is not None:
+            depth_path = os.path.join(ds_path, "instantsplat_depth")
+            os.makedirs(depth_path, exist_ok=True)
+
+
         for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export images"):
             gt = viewpoint_cam.original_image[0:3, :, :]
             save_img_u8(gt.permute(1,2,0).cpu().numpy(), os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
@@ -396,3 +402,7 @@ class GaussianExtractor(object):
             save_img_u8(self.normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(render_normal_path, 'render_normal_{0:05d}'.format(idx) + ".png"))
             save_img_u8(self.depth_normals[idx].permute(1,2,0).cpu().numpy() * 0.5 + 0.5, os.path.join(surf_nomal_path, 'surf_normal_{0:05d}'.format(idx) + ".png"))
             save_depthmap(self.depthmaps[idx][0].cpu().numpy(), os.path.join(vis_path, 'depth_{0:05d}'.format(idx) + ".png"))
+
+            if depth_path is not None:
+                save_img_f32(self.depthmaps[idx][0].cpu().numpy(), os.path.join(depth_path, viewpoint_cam.image_name + ".tiff"))
+                save_depthmap(self.depthmaps[idx][0].cpu().numpy(), os.path.join(depth_path, viewpoint_cam.image_name + ".png"))

@@ -83,7 +83,7 @@ if __name__ == "__main__":
             viewpoint_stack = loadCameras(optimized_pose, scene.getTrainCameras())
             gaussExtractor.reconstruction_optim(gaussians, viewpoint_stack, 0, pipeline, background)            
             # gaussExtractor.reconstruction(viewpoint_stack)
-            gaussExtractor.export_image(train_dir)
+            gaussExtractor.export_image(train_dir, args.source_path)
 
         if not args.skip_mesh:
             print("export mesh ...")
