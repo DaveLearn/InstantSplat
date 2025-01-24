@@ -72,12 +72,16 @@ def loadCameras(poses, viewpoint_stack):
 
     # load optimized poses
     if poses.shape[0] == len(viewpoint_stack):
+        print("loading optimized poses")
         for idx, cam in enumerate(viewpoint_stack):
-            R = np.transpose(poses[idx][:3, :3])
-            T = poses[idx][:3, 3]
+            pose_idx = cam.colmap_id - 1 # the poses are from shuffled training run so we need to map them back to the original order
+            R = np.transpose(poses[pose_idx][:3, :3])
+            T = poses[pose_idx][:3, 3]
             cam.R = R
             cam.T = T
+
             cam.world_view_transform = torch.tensor(getWorld2View2(R, T)).transpose(0, 1).cuda()
+            
             cam.full_proj_transform = (cam.world_view_transform.unsqueeze(0).bmm(cam.projection_matrix.unsqueeze(0))).squeeze(0)
             cam.camera_center = cam.world_view_transform.inverse()[3, :3]
 
@@ -185,6 +189,9 @@ def readColmapSceneInfo(path, images, eval, args, llffhold=8):
     else:
         cameras_extrinsic_file = os.path.join(path, f"sparse_{args.n_views}/0", "images.txt")
         cameras_intrinsic_file = os.path.join(path, f"sparse_{args.n_views}/0", "cameras.txt")
+
+    print(f"reading {cameras_extrinsic_file}")
+    print(f"reading {cameras_intrinsic_file}")
 
     cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
     cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)

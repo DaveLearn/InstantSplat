@@ -117,6 +117,10 @@ def main(source_path, model_path, ckpt_path, device, batch_size, image_size, sch
 
     # if poses are provided, use them as initial poses
     if poses is not None:
+        print("presetting poses")
+        for i, pose in enumerate(poses):
+            print(f"pose for img-{i+1}: {pose}")
+        
         scene.preset_pose(poses)
 
 
