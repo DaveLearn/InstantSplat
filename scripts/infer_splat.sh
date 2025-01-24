@@ -1,19 +1,24 @@
 #!/bin/bash
 
 # Change the absolute path first!
-DATA_ROOT_DIR="/home/david/projects/embodied_gaussians/datasets/real"
+DATA_ROOT_DIR="/home/david/projects/embodied_gaussians/datasets"
 OUTPUT_DIR="output_infer"
+
 
 # ensure the scene is passed as an argument
 if [ -z "$1" ]; then
-    echo "Usage: $0 <scene> where scene is folder in $DATA_ROOT_DIR" 
+    echo "Usage: $0  <scene> where scene is folder in $DATA_ROOT_DIR/ eg: real/multiple1_aruco" 
     exit 1
 fi
 
 SCENE=$1
 
-
-N_VIEWS=5
+# if Scene starts with "real" then use 5 views, otherwise use 6 views
+if [[ $SCENE == real* ]]; then
+    N_VIEWS=5
+else
+    N_VIEWS=6
+fi
 
 gs_train_iter=1500
 
@@ -29,11 +34,10 @@ get_available_gpu() {
 # Function: Run task on specified GPU
 run_on_gpu() {
     local GPU_ID=$1
-    local DATASET=$2
-    local SCENE=$3
-    local N_VIEW=$4
-    local gs_train_iter=$5
-    SOURCE_PATH=${DATA_ROOT_DIR}/${DATASET}/${SCENE}/modelling/static/
+    local SCENE=$2
+    local N_VIEW=$3
+    local gs_train_iter=$4
+    SOURCE_PATH=${DATA_ROOT_DIR}/${SCENE}/modelling/static/
     IMAGE_PATH=${SOURCE_PATH}color
     MODEL_PATH=./${OUTPUT_DIR}/${SCENE}/${N_VIEW}_views
 
@@ -41,7 +45,7 @@ run_on_gpu() {
     mkdir -p ${MODEL_PATH}
 
     echo "======================================================="
-    echo "Starting process: ${DATASET}/${SCENE} (${N_VIEW} views/${gs_train_iter} iters) on GPU ${GPU_ID}"
+    echo "Starting process: ${SCENE} (${N_VIEW} views/${gs_train_iter} iters) on GPU ${GPU_ID}"
     echo "======================================================="
 
     # (1) Co-visible Global Geometry Initialization
@@ -86,6 +90,7 @@ run_on_gpu() {
     --depth_ratio 0 \
     --num_cluster 50 \
     --mesh_res 2048 \
+    --skip_mesh \
     --depth_trunc 4.0 \
     2>&1  | tee ${MODEL_PATH}/03_render_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rendering completed. Log saved in ${MODEL_PATH}/03_render_train.log"
@@ -94,13 +99,13 @@ run_on_gpu() {
 
 
     echo "======================================================="
-    echo "Task completed: ${DATASET}/${SCENE} (${N_VIEW} views/${gs_train_iter} iters) on GPU ${GPU_ID}"
+    echo "Task completed: ${SCENE} (${N_VIEW} views/${gs_train_iter} iters) on GPU ${GPU_ID}"
     echo "======================================================="
 }
 
 # Main loop
 
-run_on_gpu 0 "$DATASET" "$SCENE" "$N_VIEWS" "$gs_train_iter"
+run_on_gpu 0 "$SCENE" "$N_VIEWS" "$gs_train_iter"
 
 
 # Wait for all background tasks to complete
