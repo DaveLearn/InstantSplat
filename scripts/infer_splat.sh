@@ -74,7 +74,8 @@ run_on_gpu() {
     --images color \
     --n_views ${N_VIEW} \
     --iterations ${gs_train_iter} \
-    --depth_ratio 0 \
+    --depth_ratio 1 \
+    --sh_degree 0 \
     --lambda_dist 10 \
      2>&1  | tee ${MODEL_PATH}/02_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Training completed. Log saved in ${MODEL_PATH}/02_train.log"
@@ -87,11 +88,10 @@ run_on_gpu() {
     -r 1 \
     --n_views ${N_VIEW} \
     --iterations ${gs_train_iter} \
-    --depth_ratio 0 \
+    --depth_ratio 1 \
     --num_cluster 50 \
-    --mesh_res 2048 \
-    --skip_mesh \
-    --depth_trunc 4.0 \
+    --sh_degree 0 \
+    --mesh_res 1024 \
     2>&1  | tee ${MODEL_PATH}/03_render_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rendering completed. Log saved in ${MODEL_PATH}/03_render_train.log"
     # --voxel_size 0.004 \
