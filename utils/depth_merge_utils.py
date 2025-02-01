@@ -9,22 +9,25 @@ import torch.nn.parallel
 
 import torch.nn.functional as F
 
+from scene.cameras import Camera
 from scene.dataset_readers import CameraInfo
 from utils.graphics_utils import fov2focal
 
 
 # read intrinsics and extrinsics
-def get_camera_parameters(cam: CameraInfo, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]: # (intrinsics, extrinsics)
+def get_camera_parameters(cam: Camera, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]: # (intrinsics, extrinsics)
     
+    assert isinstance(cam, Camera), "cam must be an instance of Camera, but was {}".format(type(cam))
+
     extrinsics = torch.cat((torch.tensor(cam.R, dtype=torch.float32, device=device), 
                            torch.tensor(cam.T.reshape(3, 1), dtype=torch.float32, device=device)), dim=1)
     extrinsics = torch.cat((extrinsics, torch.tensor([[0, 0, 0, 1]], dtype=torch.float32, device=device)), dim=0)
 
-    focal_length_y = fov2focal(cam.FovY, cam.height)
-    focal_length_x = fov2focal(cam.FovX, cam.width)
+    focal_length_y = fov2focal(cam.FoVy, cam.image_height)
+    focal_length_x = fov2focal(cam.FoVx, cam.image_width)
 
-    intrinsics = torch.tensor([[focal_length_x, 0, cam.width/2],
-                               [0, focal_length_y, cam.height/2],
+    intrinsics = torch.tensor([[focal_length_x, 0, cam.image_width/2],
+                               [0, focal_length_y, cam.image_height/2],
                                [0, 0, 1]], dtype=torch.float32, device=device)
     return intrinsics, extrinsics
 
@@ -50,6 +53,16 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
         x_src (torch.Tensor): Source view x-coordinates (shape: [H, W]).
         y_src (torch.Tensor): Source view y-coordinates (shape: [H, W]).
     """
+       # Validate input shapes
+    assert depth_ref.dim() == 2, "depth_ref must be a 2D tensor of shape [H, W]"
+    assert depth_src.dim() == 2, "depth_src must be a 2D tensor of shape [H, W]"
+    assert intrinsics_ref.shape == (3, 3), "intrinsics_ref must be a 3x3 tensor"
+    assert intrinsics_src.shape == (3, 3), "intrinsics_src must be a 3x3 tensor"
+    assert extrinsics_ref.shape == (4, 4), "extrinsics_ref must be a 4x4 tensor"
+    assert extrinsics_src.shape == (4, 4), "extrinsics_src must be a 4x4 tensor"
+    assert depth_ref.shape == depth_src.shape, "depth_ref and depth_src must have the same shape"
+
+
     height, width = depth_ref.shape
     device = depth_ref.device
 
@@ -61,7 +74,7 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
 
     # Convert reference pixel coordinates to 3D points in the reference camera space
     ones = torch.ones_like(x_ref)
-    xy1_ref = torch.stack((x_ref, y_ref, ones), dim=0)  # Shape: [3, H*W]
+    xy1_ref = torch.stack((x_ref, y_ref, ones), dim=0).float()  # Shape: [3, H*W]
     xyz_ref = torch.matmul(torch.linalg.inv(intrinsics_ref), xy1_ref) * depth_ref.reshape(-1)  # Shape: [3, H*W]
 
     # Transform 3D points from the reference camera space to the source camera space
@@ -75,6 +88,14 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
     # Reshape source pixel coordinates to 2D grids
     x_src = xy_src[0].reshape(height, width)  # Shape: [H, W]
     y_src = xy_src[1].reshape(height, width)  # Shape: [H, W]
+
+    # to help debug visually, plot these using scatter, color based on their depth (from K_xyz_src)
+    # overlay that on the source depth map
+    import matplotlib.pyplot as plt
+    plt.imshow(depth_src.cpu().numpy(), cmap='gray')
+    plt.scatter(x_src.cpu().numpy(), y_src.cpu().numpy(), c=K_xyz_src[2].cpu().numpy(), cmap='viridis')
+    plt.show()
+
 
     # Step 2: Reproject the source view points with source view depth estimation
     # Normalize source pixel coordinates to the range [-1, 1] for grid_sample
@@ -108,7 +129,9 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
 
 def check_geometric_consistency(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, extrinsics_ref: torch.Tensor, depth_src: torch.Tensor, intrinsics_src: torch.Tensor, extrinsics_src: torch.Tensor, relative_depth_diff_threshold: float = 0.01):
     width, height = depth_ref.shape[1], depth_ref.shape[0]
-    x_ref, y_ref = torch.meshgrid(torch.arange(0, width), torch.arange(0, height))
+    x_ref, y_ref = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
+    x_ref = x_ref.to(depth_ref.device)
+    y_ref = y_ref.to(depth_ref.device)
     depth_reprojected, x2d_reprojected, y2d_reprojected, x2d_src, y2d_src = reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref,
                                                      depth_src, intrinsics_src, extrinsics_src)
     # check |p_reproj-p_1| < 1 (same pixel)
@@ -120,6 +143,22 @@ def check_geometric_consistency(depth_ref: torch.Tensor, intrinsics_ref: torch.T
 
     mask = torch.logical_and(dist < 1, relative_depth_diff < relative_depth_diff_threshold)
     depth_reprojected[~mask] = 0
+
+    # print number of pixels that dist < 1, and as a percentage
+    print("dist < 1:{}".format(dist[dist < 1].shape[0]))
+    print("dist < 1:{}%".format(dist[dist < 1].shape[0] / dist.shape[0] * 100))
+
+    # plot with matplotlib
+    import matplotlib.pyplot as plt
+    plt.imshow(dist.cpu().numpy(), cmap='gray')
+    plt.colorbar()
+    plt.show()
+
+    # print relative and absolute depth diff
+    print("relative_depth_diff_mean:{}".format(relative_depth_diff.mean()))
+    print("relative_depth_diff_max:{}".format(relative_depth_diff.max()))
+    print("depth_diff_mean:{}".format(depth_diff.mean()))
+    print("depth_diff_max:{}".format(depth_diff.max()))
 
     return mask, depth_reprojected, x2d_src, y2d_src
 
@@ -134,6 +173,43 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
     device = depth_est[0].device
     assert all(d.device == device for d in depth_est), "All depth_est tensors must be on the same device"
     assert all(c.device == device for c in confidences), "All confidence tensors must be on the same device"
+
+
+    # quick sanity check against ourself, delete later
+    ref_intrinsics, ref_extrinsics = get_camera_parameters(cam_infos[0], device)
+    ref_depth_est = depth_est[0]
+    src_intrinsics, src_extrinsics = get_camera_parameters(cam_infos[1], device)
+    src_depth_est = depth_est[1]
+
+    geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(ref_depth_est, ref_intrinsics, ref_extrinsics,
+                                                                      src_depth_est,
+                                                                      src_intrinsics, src_extrinsics, 0.01)
+    print("geo_mask_sum:{}".format(geo_mask.float().mean()))
+    print("geo_mask_max:{}".format(geo_mask.max()))
+
+    # check that depth_reprojected is the same as ref_depth_est
+    # calc distance between depth_reprojected and ref_depth_est
+    depth_diff = torch.abs(depth_reprojected - ref_depth_est)
+    print("depth_diff_mean:{}".format(depth_diff.mean()))
+    print("depth_diff_max:{}".format(depth_diff.max()))
+    
+    # print the min and max depth of src_depth_est and ref_depth_est
+    print("src_depth_est_min:{}".format(src_depth_est.min()))
+    print("src_depth_est_max:{}".format(src_depth_est.max()))
+    print("ref_depth_est_min:{}".format(ref_depth_est.min()))
+    print("ref_depth_est_max:{}".format(ref_depth_est.max()))
+    # and the mean
+    print("src_depth_est_mean:{}".format(src_depth_est.mean()))
+    print("ref_depth_est_mean:{}".format(ref_depth_est.mean()))
+
+    # and same for depth_reprojected
+    print("depth_reprojected_min:{}".format(depth_reprojected.min()))
+    print("depth_reprojected_max:{}".format(depth_reprojected.max()))
+    print("depth_reprojected_mean:{}".format(depth_reprojected.mean()))
+
+    assert torch.allclose(depth_reprojected, ref_depth_est), "depth_reprojected is not the same as ref_depth_est"
+
+
 
     pair_data = [
         (ref_idx, [src_idx for src_idx in range(len(cam_infos)) if src_idx != ref_idx])
@@ -172,10 +248,11 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
         # at least required_views source views matched
         geo_mask = geo_mask_sum >= required_views
         final_mask = torch.logical_and(photo_mask, geo_mask)
-
-        print("processed {}, ref-view{:0>2}, photo/geo/final-mask:{}/{}/{}".format(cam_infos[ref_view_idx].image_name,
-                                                                                    photo_mask.mean(),
-                                                                                    geo_mask.mean(), final_mask.mean()))
+        print("geo_mask_sum:{}".format(geo_mask_sum.float().mean()))
+        print("geo_mask_max:{}".format(geo_mask_sum.max()))
+        print("processed {},  photo/geo/final-mask:{}/{}/{}".format(cam_infos[ref_view_idx].image_name,
+                                                                                    photo_mask.float().mean(),
+                                                                                    geo_mask.float().mean(), final_mask.float().mean()))
 
         depth_validity_masks.append(final_mask)
         depth_averaged.append(depth_est_averaged)

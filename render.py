@@ -41,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--skip_mesh", action="store_true")
+    parser.add_argument("--skip_depth_fusion", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--render_path", action="store_true")
     parser.add_argument("--voxel_size", default=-1.0, type=float, help='Mesh: voxel size for TSDF')
@@ -83,7 +84,12 @@ if __name__ == "__main__":
             viewpoint_stack = loadCameras(optimized_pose, scene.getTrainCameras())
             gaussExtractor.reconstruction_optim(gaussians, viewpoint_stack, 0, pipeline, background)            
             # gaussExtractor.reconstruction(viewpoint_stack)
-            gaussExtractor.export_image(train_dir, args.source_path)
+            #gaussExtractor.export_image(train_dir, args.source_path)
+
+            if not args.skip_depth_fusion:
+                print("export depth fusion ...")
+                gaussExtractor.export_depth_fusion(train_dir, args.source_path)
+
 
         if not args.skip_mesh:
             print("export mesh ...")

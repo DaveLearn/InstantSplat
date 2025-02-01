@@ -100,6 +100,7 @@ class GaussianExtractor(object):
         self.normals = []
         self.depth_normals = []
         self.viewpoint_stack = []
+        self.distmaps = []
 
     @torch.no_grad()
     def reconstruction(self, viewpoint_stack):
@@ -120,11 +121,12 @@ class GaussianExtractor(object):
             self.alphamaps.append(alpha.cpu())
             self.normals.append(normal.cpu())
             self.depth_normals.append(depth_normal.cpu())
-        
+            self.distmaps.append(render_pkg['rend_dist'].cpu())
         self.rgbmaps = torch.stack(self.rgbmaps, dim=0)
         self.depthmaps = torch.stack(self.depthmaps, dim=0)
         self.alphamaps = torch.stack(self.alphamaps, dim=0)
         self.depth_normals = torch.stack(self.depth_normals, dim=0)
+        self.distmaps = torch.stack(self.distmaps, dim=0)
         self.estimate_bounding_sphere()
 
 
@@ -208,6 +210,7 @@ class GaussianExtractor(object):
             self.rgbmaps.append(rgb.detach().cpu())
             self.depthmaps.append(depth.detach().cpu())
             self.depth_normals.append(depth_normal.detach().cpu())
+            self.distmaps.append(render_pkg['rend_dist'].detach().cpu())
 
         self.estimate_bounding_sphere()
 
@@ -368,6 +371,59 @@ class GaussianExtractor(object):
         mesh.vertex_colors = o3d.utility.Vector3dVector(rgbs.cpu().numpy())
         return mesh
 
+
+    @torch.no_grad()
+    def export_depth_fusion(self, path, ds_path=None):
+        """Export depth fusion images and related data to specified paths.
+        
+        Args:
+            path: Base output directory path
+            ds_path: Optional dataset path for additional outputs
+        """
+        from utils.depth_merge_utils import filter_depths
+
+        # Create output directories
+        depth_path = os.path.join(path, "depth_fused")
+        os.makedirs(depth_path, exist_ok=True)
+
+        ds_depth_path = None
+        if ds_path is not None:
+            ds_depth_path = os.path.join(ds_path, "instantsplat_depth_fused")
+            os.makedirs(ds_depth_path, exist_ok=True)
+
+        # Prepare inputs for depth fusion
+        depth_est = [depth[0].cuda() for depth in self.depthmaps]  # List of depth maps
+        confidences = [torch.exp(-10 * dist[0].cuda()) for dist in self.distmaps]  # Using alpha maps as confidence
+
+        # Perform depth fusion
+        depth_validity_masks, depth_averaged = filter_depths(
+            cam_infos=self.viewpoint_stack,
+            depth_est=depth_est,
+            confidences=confidences,
+            confidence_threshold=0,  # Confidence threshold for photo-consistency
+            relative_depth_diff_threshold=1.0,  # Threshold for geometric consistency
+            required_views=1  # Minimum number of consistent views required
+        )
+
+        # Export the results
+        for idx, (mask, depth) in enumerate(zip(depth_validity_masks, depth_averaged)):
+            # Save the fused depth map
+            save_img_f32(depth.cpu().numpy(), os.path.join(depth_path, 'depth_fused_{0:05d}'.format(idx) + ".tiff"))
+            
+            masked_depth = depth * mask
+            save_depthmap(masked_depth.cpu().numpy(), os.path.join(depth_path, 'depth_fused_{0:05d}'.format(idx) + ".png"))
+            
+            # Save the validity mask
+            save_img_u8((mask.float().cpu().numpy() * 255).astype(np.uint8), 
+                       os.path.join(depth_path, 'mask_{0:05d}'.format(idx) + ".png"))
+
+            # If dataset path is provided, save additional outputs there
+            if ds_depth_path is not None:
+                image_name = self.viewpoint_stack[idx].image_name
+                save_img_f32(depth.cpu().numpy(), os.path.join(ds_depth_path, image_name + ".tiff"))
+                save_depthmap(masked_depth.cpu().numpy(), os.path.join(ds_depth_path, image_name + ".png"))
+                save_img_u8((mask.float().cpu().numpy() * 255).astype(np.uint8),
+                           os.path.join(ds_depth_path, image_name + "_mask.png"))
 
     @torch.no_grad()
     def export_image(self, path, ds_path=None):
