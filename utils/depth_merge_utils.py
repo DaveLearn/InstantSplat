@@ -19,9 +19,10 @@ def get_camera_parameters(cam: Camera, device: torch.device) -> Tuple[torch.Tens
     
     assert isinstance(cam, Camera), "cam must be an instance of Camera, but was {}".format(type(cam))
 
-    extrinsics = torch.cat((torch.tensor(cam.R, dtype=torch.float32, device=device), 
-                           torch.tensor(cam.T.reshape(3, 1), dtype=torch.float32, device=device)), dim=1)
-    extrinsics = torch.cat((extrinsics, torch.tensor([[0, 0, 0, 1]], dtype=torch.float32, device=device)), dim=0)
+    #extrinsics = torch.cat((torch.tensor(cam.R, dtype=torch.float32, device=device), 
+              #             torch.tensor(cam.T.reshape(3, 1), dtype=torch.float32, device=device)), dim=1)
+    #extrinsics = torch.cat((extrinsics, torch.tensor([[0, 0, 0, 1]], dtype=torch.float32, device=device)), dim=0)
+    extrinsics =  cam.world_view_transform.transpose(0, 1)
 
     focal_length_y = fov2focal(cam.FoVy, cam.image_height)
     focal_length_x = fov2focal(cam.FoVx, cam.image_width)
@@ -34,7 +35,7 @@ def get_camera_parameters(cam: Camera, device: torch.device) -> Tuple[torch.Tens
 
 
 def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, extrinsics_ref: torch.Tensor,
-                         depth_src: torch.Tensor, intrinsics_src: torch.Tensor, extrinsics_src: torch.Tensor):
+                         depth_src: torch.Tensor, intrinsics_src: torch.Tensor, extrinsics_src: torch.Tensor, img_ref: torch.Tensor, img_src: torch.Tensor):
     """
     Reprojects a depth map from the reference view to the source view and back to the reference view.
 
@@ -77,6 +78,9 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
     xy1_ref = torch.stack((x_ref, y_ref, ones), dim=0).float()  # Shape: [3, H*W]
     xyz_ref = torch.matmul(torch.linalg.inv(intrinsics_ref), xy1_ref) * depth_ref.reshape(-1)  # Shape: [3, H*W]
 
+    # quick sanity check by asserting the z values are the same as the depth_ref
+    assert torch.allclose(xyz_ref[2], depth_ref.reshape(-1)), "z values are not the same as the depth_ref"
+
     # Transform 3D points from the reference camera space to the source camera space
     xyz1_ref = torch.vstack((xyz_ref, ones))  # Shape: [4, H*W]
     xyz_src = torch.matmul(torch.matmul(extrinsics_src, torch.linalg.inv(extrinsics_ref)), xyz1_ref)[:3]  # Shape: [3, H*W]
@@ -88,14 +92,53 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
     # Reshape source pixel coordinates to 2D grids
     x_src = xy_src[0].reshape(height, width)  # Shape: [H, W]
     y_src = xy_src[1].reshape(height, width)  # Shape: [H, W]
+    z_src = K_xyz_src[2].reshape(height, width)  # Shape: [H, W]
 
-    # to help debug visually, plot these using scatter, color based on their depth (from K_xyz_src)
+    # to help debug visually, rasterize these points, color based on their depth (from K_xyz_src) (using viridis)
     # overlay that on the source depth map
+    rasterized_points = torch.zeros_like(depth_src)
+    # filter out invalid points 
+    valid_points = (x_src >= 0) & (x_src < width) & (y_src >= 0) & (y_src < height)
+    rasterized_points[y_src[valid_points].long(), x_src[valid_points].long()] = z_src[valid_points]
     import matplotlib.pyplot as plt
-    plt.imshow(depth_src.cpu().numpy(), cmap='gray')
-    plt.scatter(x_src.cpu().numpy(), y_src.cpu().numpy(), c=K_xyz_src[2].cpu().numpy(), cmap='viridis')
-    plt.show()
+    #plt.imshow(depth_src.cpu().numpy(), cmap='magma')
+    # overlay rasterized points on top of the source depth map
+    #plt.imshow(rasterized_points.cpu().numpy(), cmap='viridis', alpha=0.5)
+   # plt.show()
 
+    if False:
+        # now plot the colors instead of depth
+        rasterized_points_color = torch.zeros_like(img_src)
+        rasterized_points_color[y_src[valid_points].long(), x_src[valid_points].long()] = img_ref[y_ref[valid_points.flatten()].long(), x_ref[valid_points.flatten()].long()]
+        
+        # overlay the rasterized points on top of the source image, the source image pixels should be converted to greyscale first
+        # first convert img_src to greyscale
+        img_src_gray = 0.2989 * img_src[:, :, 0] + 0.5870 * img_src[:, :, 1] + 0.1140 * img_src[:, :, 2]
+            
+        
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
+
+        # Plot the reference image in the first subplot
+        ax1.imshow(img_ref.cpu().numpy())
+        ax1.set_title("Reference Image")
+        ax1.axis('off')
+
+        # Expand the source grayscale image to 3 channels for proper display
+        img_src_gray_expanded = img_src_gray.unsqueeze(2).repeat(1, 1, 3)
+
+        # Plot the source grayscale image with the overlaid rasterized colors in the second subplot
+        ax2.imshow(img_src_gray_expanded.cpu().numpy())
+        ax2.imshow(rasterized_points_color.cpu().numpy(), alpha=0.4)
+        ax2.set_title("Source Image with Overlay")
+        ax2.axis('off')
+
+        # Plot the original source image in the third subplot
+        ax3.imshow(img_src.cpu().numpy())
+        ax3.set_title("Original Source Image")
+        ax3.axis('off')
+
+        plt.tight_layout()
+        plt.show()
 
     # Step 2: Reproject the source view points with source view depth estimation
     # Normalize source pixel coordinates to the range [-1, 1] for grid_sample
@@ -124,41 +167,50 @@ def reproject_with_depth(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, 
     x_reprojected = xy_reprojected[0].reshape(height, width)  # Shape: [H, W]
     y_reprojected = xy_reprojected[1].reshape(height, width)  # Shape: [H, W]
 
+
+    # plot the reprojected depth map side by side with original depth map
+    #fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    #im1 = ax1.imshow(depth_reprojected.clamp(max=4.0).cpu().numpy(), cmap='viridis', vmin=0.0, vmax=4.0)
+    #ax1.set_title("Reprojected Depth Map")
+    #ax1.axis('off')
+    #im2 = ax2.imshow(depth_ref.clamp(max=4.0).cpu().numpy(), cmap='viridis', vmin=0.0, vmax=4.0)
+    #ax2.set_title("Original Depth Map")
+    #ax2.axis('off')
+    #plt.show()
+
     return depth_reprojected, x_reprojected, y_reprojected, x_src, y_src
 
 
-def check_geometric_consistency(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, extrinsics_ref: torch.Tensor, depth_src: torch.Tensor, intrinsics_src: torch.Tensor, extrinsics_src: torch.Tensor, relative_depth_diff_threshold: float = 0.01):
+def check_geometric_consistency(depth_ref: torch.Tensor, intrinsics_ref: torch.Tensor, extrinsics_ref: torch.Tensor, depth_src: torch.Tensor, intrinsics_src: torch.Tensor, extrinsics_src: torch.Tensor, relative_depth_diff_threshold: float = 0.01, img_ref: torch.Tensor = None, img_src: torch.Tensor = None):
     width, height = depth_ref.shape[1], depth_ref.shape[0]
     x_ref, y_ref = torch.meshgrid(torch.arange(0, width), torch.arange(0, height), indexing='xy')
     x_ref = x_ref.to(depth_ref.device)
     y_ref = y_ref.to(depth_ref.device)
     depth_reprojected, x2d_reprojected, y2d_reprojected, x2d_src, y2d_src = reproject_with_depth(depth_ref, intrinsics_ref, extrinsics_ref,
-                                                     depth_src, intrinsics_src, extrinsics_src)
+                                                     depth_src, intrinsics_src, extrinsics_src, img_ref, img_src)
     # check |p_reproj-p_1| < 1 (same pixel)
     dist = torch.sqrt((x2d_reprojected - x_ref) ** 2 + (y2d_reprojected - y_ref) ** 2)
 
     # check |d_reproj-d_1| / d_1 < relative_depth_diff_threshold ()
+    invalid_mask = (depth_ref == 0) | (depth_reprojected == 0)
     depth_diff = torch.abs(depth_reprojected - depth_ref)
     relative_depth_diff = depth_diff / depth_ref
 
-    mask = torch.logical_and(dist < 1, relative_depth_diff < relative_depth_diff_threshold)
+    mask = torch.logical_and(dist < 1.5, relative_depth_diff < relative_depth_diff_threshold)
     depth_reprojected[~mask] = 0
 
     # print number of pixels that dist < 1, and as a percentage
-    print("dist < 1:{}".format(dist[dist < 1].shape[0]))
-    print("dist < 1:{}%".format(dist[dist < 1].shape[0] / dist.shape[0] * 100))
+    print("dist < 1:{}".format(dist[dist < 2].flatten().shape[0]))
+    print("dist < 1:{}%".format(dist[dist < 2].flatten().shape[0] / dist.flatten().shape[0] * 100))
 
     # plot with matplotlib
-    import matplotlib.pyplot as plt
-    plt.imshow(dist.cpu().numpy(), cmap='gray')
-    plt.colorbar()
-    plt.show()
+
 
     # print relative and absolute depth diff
-    print("relative_depth_diff_mean:{}".format(relative_depth_diff.mean()))
-    print("relative_depth_diff_max:{}".format(relative_depth_diff.max()))
-    print("depth_diff_mean:{}".format(depth_diff.mean()))
-    print("depth_diff_max:{}".format(depth_diff.max()))
+    print("relative_depth_diff_mean:{}".format(relative_depth_diff[~invalid_mask].mean()))
+    print("relative_depth_diff_max:{}".format(relative_depth_diff[~invalid_mask].max()))
+    print("depth_diff_mean:{}".format(depth_diff[~invalid_mask].mean()))
+    print("depth_diff_max:{}".format(depth_diff[~invalid_mask].max()))
 
     return mask, depth_reprojected, x2d_src, y2d_src
 
@@ -176,40 +228,43 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
 
 
     # quick sanity check against ourself, delete later
-    ref_intrinsics, ref_extrinsics = get_camera_parameters(cam_infos[0], device)
-    ref_depth_est = depth_est[0]
-    src_intrinsics, src_extrinsics = get_camera_parameters(cam_infos[1], device)
-    src_depth_est = depth_est[1]
+    #ref_intrinsics, ref_extrinsics = get_camera_parameters(cam_infos[0], device)
+    #ref_depth_est = depth_est[0]
+    #img_ref = cam_infos[0].original_image.permute(1, 2, 0) # [H, W, 3]
+    # make a fake src cam which is the same as ref cam but moved 30 cm to the right
+    #src_intrinsics, src_extrinsics = get_camera_parameters(cam_infos[3], device)
+   # src_depth_est = depth_est[3]
+   # img_src = cam_infos[3].original_image.permute(1, 2, 0)
 
-    geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(ref_depth_est, ref_intrinsics, ref_extrinsics,
-                                                                      src_depth_est,
-                                                                      src_intrinsics, src_extrinsics, 0.01)
-    print("geo_mask_sum:{}".format(geo_mask.float().mean()))
-    print("geo_mask_max:{}".format(geo_mask.max()))
+    #geo_mask, depth_reprojected, x2d_src, y2d_src = check_geometric_consistency(ref_depth_est, ref_intrinsics, ref_extrinsics,
+    #                                                                  src_depth_est,
+    #                                                                  src_intrinsics, src_extrinsics, relative_depth_diff_threshold, img_ref, img_src)
+    #print("geo_mask_sum:{}".format(geo_mask.float().mean()))
+    #print("geo_mask_max:{}".format(geo_mask.max()))
 
     # check that depth_reprojected is the same as ref_depth_est
     # calc distance between depth_reprojected and ref_depth_est
-    depth_diff = torch.abs(depth_reprojected - ref_depth_est)
-    print("depth_diff_mean:{}".format(depth_diff.mean()))
-    print("depth_diff_max:{}".format(depth_diff.max()))
+   # depth_diff = torch.abs(depth_reprojected - ref_depth_est)
+    #print("depth_diff_mean:{}".format(depth_diff.mean()))
+   # print("depth_diff_max:{}".format(depth_diff.max()))
     
     # print the min and max depth of src_depth_est and ref_depth_est
-    print("src_depth_est_min:{}".format(src_depth_est.min()))
-    print("src_depth_est_max:{}".format(src_depth_est.max()))
-    print("ref_depth_est_min:{}".format(ref_depth_est.min()))
-    print("ref_depth_est_max:{}".format(ref_depth_est.max()))
+    #print("src_depth_est_min:{}".format(src_depth_est.min()))
+   # print("src_depth_est_max:{}".format(src_depth_est.max()))
+   # print("ref_depth_est_min:{}".format(ref_depth_est.min()))
+   # print("ref_depth_est_max:{}".format(ref_depth_est.max()))
     # and the mean
-    print("src_depth_est_mean:{}".format(src_depth_est.mean()))
-    print("ref_depth_est_mean:{}".format(ref_depth_est.mean()))
+    #print("src_depth_est_mean:{}".format(src_depth_est.mean()))
+   # print("ref_depth_est_mean:{}".format(ref_depth_est.mean()))
 
     # and same for depth_reprojected
-    print("depth_reprojected_min:{}".format(depth_reprojected.min()))
-    print("depth_reprojected_max:{}".format(depth_reprojected.max()))
-    print("depth_reprojected_mean:{}".format(depth_reprojected.mean()))
+    #print("depth_reprojected_min:{}".format(depth_reprojected.min()))
+    #print("depth_reprojected_max:{}".format(depth_reprojected.max()))
+    #print("depth_reprojected_mean:{}".format(depth_reprojected.mean()))
 
-    assert torch.allclose(depth_reprojected, ref_depth_est), "depth_reprojected is not the same as ref_depth_est"
+    #assert torch.allclose(depth_reprojected, ref_depth_est), "depth_reprojected is not the same as ref_depth_est"
 
-
+    
 
     pair_data = [
         (ref_idx, [src_idx for src_idx in range(len(cam_infos)) if src_idx != ref_idx])
@@ -253,6 +308,9 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
         print("processed {},  photo/geo/final-mask:{}/{}/{}".format(cam_infos[ref_view_idx].image_name,
                                                                                     photo_mask.float().mean(),
                                                                                     geo_mask.float().mean(), final_mask.float().mean()))
+
+        print("delta depth mean:{}".format(torch.abs(ref_depth_est[final_mask] - depth_est_averaged[final_mask]).mean()))
+        print("delta depth max:{}".format(torch.abs(ref_depth_est[final_mask] - depth_est_averaged[final_mask]).max()))
 
         depth_validity_masks.append(final_mask)
         depth_averaged.append(depth_est_averaged)
