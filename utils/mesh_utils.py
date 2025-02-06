@@ -101,6 +101,8 @@ class GaussianExtractor(object):
         self.depth_normals = []
         self.viewpoint_stack = []
         self.distmaps = []
+        self.depth_averaged = []
+        self.depth_validity_masks = []
 
     @torch.no_grad()
     def reconstruction(self, viewpoint_stack):
@@ -229,8 +231,10 @@ class GaussianExtractor(object):
         print(f"The estimated bounding radius is {self.radius:.2f}")
         print(f"Use at least {2.0 * self.radius:.2f} for depth_trunc")
 
+   
+
     @torch.no_grad()
-    def extract_mesh_bounded(self, voxel_size=0.004, sdf_trunc=0.02, depth_trunc=3, mask_backgrond=True):
+    def extract_mesh_bounded(self, voxel_size=0.004, sdf_trunc=0.02, depth_trunc=3, mask_backgrond=True, use_fused_depth=False):
         """
         Perform TSDF fusion given a fixed depth range, used in the paper.
         
@@ -245,6 +249,11 @@ class GaussianExtractor(object):
         print(f'voxel_size: {voxel_size}')
         print(f'sdf_trunc: {sdf_trunc}')
         print(f'depth_truc: {depth_trunc}')
+        print(f'use_fused_depth: {use_fused_depth}')
+
+        if use_fused_depth:
+            assert self.depth_averaged is not None and len(self.depth_averaged) == len(self.rgbmaps), "depth fusion has not been computed"
+            
 
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
             voxel_length= voxel_size,
@@ -254,7 +263,10 @@ class GaussianExtractor(object):
 
         for i, cam_o3d in tqdm(enumerate(to_cam_open3d(self.viewpoint_stack)), desc="TSDF integration progress"):
             rgb = self.rgbmaps[i]
-            depth = self.depthmaps[i]
+            if use_fused_depth:
+                depth = self.depth_averaged[i].unsqueeze(0)
+            else:
+                depth = self.depthmaps[i]
             
             # if we have mask provided, use it
             if mask_backgrond and (self.viewpoint_stack[i].gt_alpha_mask is not None):
@@ -371,6 +383,28 @@ class GaussianExtractor(object):
         mesh.vertex_colors = o3d.utility.Vector3dVector(rgbs.cpu().numpy())
         return mesh
 
+    @torch.no_grad()
+    def fuse_depth(self, confidence_threshold=0, relative_depth_diff_threshold=0.2, required_views=2):
+        from utils.depth_merge_utils import filter_depths
+        # Prepare inputs for depth fusion
+        depth_est = [depth[0].cuda() for depth in self.depthmaps]  # List of depth maps
+        confidences = [torch.exp(-10 * dist[0].cuda()) for dist in self.distmaps]  # Using alpha maps as confidence
+
+        # Perform depth fusion
+        depth_validity_masks, depth_averaged = filter_depths(
+            cam_infos=self.viewpoint_stack,
+            depth_est=depth_est,
+            confidences=confidences,
+            confidence_threshold=confidence_threshold,  # Confidence threshold for photo-consistency
+            relative_depth_diff_threshold=relative_depth_diff_threshold,  # Threshold for geometric consistency
+            required_views=required_views  # Minimum number of consistent views required
+        )
+        # apply masks
+        for i in range(len(depth_validity_masks)):
+            depth_averaged[i] = depth_validity_masks[i].float() * depth_averaged[i]
+        self.depth_averaged = depth_averaged
+        self.depth_validity_masks = depth_validity_masks
+
 
     @torch.no_grad()
     def export_depth_fusion(self, path, ds_path=None):
@@ -391,22 +425,10 @@ class GaussianExtractor(object):
             ds_depth_path = os.path.join(ds_path, "instantsplat_depth_fused")
             os.makedirs(ds_depth_path, exist_ok=True)
 
-        # Prepare inputs for depth fusion
-        depth_est = [depth[0].cuda() for depth in self.depthmaps]  # List of depth maps
-        confidences = [torch.exp(-10 * dist[0].cuda()) for dist in self.distmaps]  # Using alpha maps as confidence
-
-        # Perform depth fusion
-        depth_validity_masks, depth_averaged = filter_depths(
-            cam_infos=self.viewpoint_stack,
-            depth_est=depth_est,
-            confidences=confidences,
-            confidence_threshold=0,  # Confidence threshold for photo-consistency
-            relative_depth_diff_threshold=1.0,  # Threshold for geometric consistency
-            required_views=1  # Minimum number of consistent views required
-        )
-
+        print("saving depth fusion to {}".format(depth_path))
         # Export the results
-        for idx, (mask, depth) in enumerate(zip(depth_validity_masks, depth_averaged)):
+        for idx, (mask, depth) in enumerate(zip(self.depth_validity_masks, self.depth_averaged)):
+            print("saving depth fusion to {}".format(os.path.join(depth_path, 'depth_fused_{0:05d}'.format(idx) + ".tiff")))
             # Save the fused depth map
             save_img_f32(depth.cpu().numpy(), os.path.join(depth_path, 'depth_fused_{0:05d}'.format(idx) + ".tiff"))
             
