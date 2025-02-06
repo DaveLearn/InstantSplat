@@ -19,10 +19,11 @@ def get_camera_parameters(cam: Camera, device: torch.device) -> Tuple[torch.Tens
     
     assert isinstance(cam, Camera), "cam must be an instance of Camera, but was {}".format(type(cam))
 
-    extrinsics = torch.cat((torch.tensor(cam.R, dtype=torch.float32, device=device), 
-                           torch.tensor(cam.T.reshape(3, 1), dtype=torch.float32, device=device)), dim=1)
-    extrinsics = torch.cat((extrinsics, torch.tensor([[0, 0, 0, 1]], dtype=torch.float32, device=device)), dim=0)
+    #extrinsics = torch.cat((torch.tensor(cam.R, dtype=torch.float32, device=device), 
+#                           torch.tensor(cam.T.reshape(3, 1), dtype=torch.float32, device=device)), dim=1)
+    #extrinsics = torch.cat((extrinsics, torch.tensor([[0, 0, 0, 1]], dtype=torch.float32, device=device)), dim=0)
 
+    extrinsics = cam.world_view_transform.inverse().T
     focal_length_y = fov2focal(cam.FoVy, cam.image_height)
     focal_length_x = fov2focal(cam.FoVx, cam.image_width)
 
@@ -190,8 +191,8 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
     # check that depth_reprojected is the same as ref_depth_est
     # calc distance between depth_reprojected and ref_depth_est
     depth_diff = torch.abs(depth_reprojected - ref_depth_est)
-    print("depth_diff_mean:{}".format(depth_diff.mean()))
-    print("depth_diff_max:{}".format(depth_diff.max()))
+    print("delta depth mean:{}".format(depth_diff.mean()))
+    print("delta depth max:{}".format(depth_diff.max()))
     
     # print the min and max depth of src_depth_est and ref_depth_est
     print("src_depth_est_min:{}".format(src_depth_est.min()))
@@ -206,6 +207,8 @@ def filter_depths(cam_infos: List[CameraInfo], depth_est: List[torch.Tensor], co
     print("depth_reprojected_min:{}".format(depth_reprojected.min()))
     print("depth_reprojected_max:{}".format(depth_reprojected.max()))
     print("depth_reprojected_mean:{}".format(depth_reprojected.mean()))
+
+
 
     assert torch.allclose(depth_reprojected, ref_depth_est), "depth_reprojected is not the same as ref_depth_est"
 

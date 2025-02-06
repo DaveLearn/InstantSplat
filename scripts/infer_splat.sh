@@ -3,7 +3,7 @@
 # Change the absolute path first!
 DATA_ROOT_DIR="/home/david/projects/embodied_gaussians/datasets"
 OUTPUT_DIR="output_infer"
-
+set -e
 
 # ensure the scene is passed as an argument
 if [ -z "$1" ]; then
@@ -92,6 +92,7 @@ run_on_gpu() {
     --num_cluster 50 \
     --sh_degree 0 \
     --mesh_res 1024 \
+    --skip_mesh \
     2>&1  | tee ${MODEL_PATH}/03_render_train.log
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rendering completed. Log saved in ${MODEL_PATH}/03_render_train.log"
     # --voxel_size 0.004 \

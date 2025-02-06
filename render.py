@@ -84,11 +84,12 @@ if __name__ == "__main__":
             viewpoint_stack = loadCameras(optimized_pose, scene.getTrainCameras())
             gaussExtractor.reconstruction_optim(gaussians, viewpoint_stack, 0, pipeline, background)            
             # gaussExtractor.reconstruction(viewpoint_stack)
-            #gaussExtractor.export_image(train_dir, args.source_path)
+            gaussExtractor.export_image(train_dir, args.source_path)
+            gaussians.save_ply(os.path.join(train_dir, 'gaussians.ply'))
 
-            if not args.skip_depth_fusion:
-                print("export depth fusion ...")
-                gaussExtractor.export_depth_fusion(train_dir, args.source_path)
+            #if not args.skip_depth_fusion:
+            #    print("export depth fusion ...")
+            #    gaussExtractor.export_depth_fusion(train_dir, args.source_path)
 
 
         if not args.skip_mesh:
